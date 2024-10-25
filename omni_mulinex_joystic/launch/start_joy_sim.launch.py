@@ -25,7 +25,7 @@ def generate_launch_description():
         ,shell=True)
     
     subprocess.check_output(
-        ["ros2 control load_controller joint_state_broadcaster --set-state active"]
+        ["ros2 control load_controller ik_leg --set-state active"]
         ,shell=True)
 
     joy_event_node = Node(

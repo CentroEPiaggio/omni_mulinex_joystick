@@ -9,20 +9,26 @@
 #define BAG_TOPIC "Joystic_Command"
 #define CONTROLLER "state_broadcaster/"
 #define OM_CONTROLLER "omni_control/"
+#define LEG_CONTROLLER "ik_leg/"
 #define X_VEL_AX 1
 #define Y_VEL_AX 0
 #define OM_VEL_AX 3
 #define HEIGHT_VEL_AX 4
 #define HOMING_BUTTON 0
 #define EMERG_BUTTON 1
+#define CHANGE_BUTTON 2
+#define WALK_BUTTON 3
 #define MAX_COUNTER_STT_STAMP 500
-
 namespace omni_mulinex_joy
 {
     using namespace std::chrono_literals;
     using std::placeholders::_1;
     void OmniMulinex_Joystic::get_param()
     {
+        sg_man_conf_.foot_x_displacement =  this->get_parameter("x_displacement").as_double();
+        sg_man_conf_.foot_h_amplitude =  this->get_parameter("z_amplitude").as_double();
+        sg_man_conf_.base_amplitude =  this->get_parameter("base_amplitude").as_double();
+        sg_man_conf_.swing_period =  this->get_parameter("swing_dur").as_double();
         // get the parameter and saturate their value with the define values
         sup_vx_ =  this->get_parameter("sup_vel_x").as_double();
         sup_vx_ = sup_vx_>MAX_LIN_VEL?MAX_LIN_VEL:sup_vx_;
@@ -36,8 +42,11 @@ namespace omni_mulinex_joy
         timer_dur_ = this->get_parameter("timer_duration").as_int();
         bag_folder_ = this->get_parameter("bag_folder").as_string();
         deadzone_ = this->get_parameter("deadzone_joy").as_double();
+        ix_ =  this->get_parameter("init_x").as_double();
+        iz_ =  this->get_parameter("init_z").as_double();
         if(register_state_)
             stt_period_ = this->get_parameter("state_duration").as_int();
+        
 
     };
 
@@ -56,33 +65,50 @@ namespace omni_mulinex_joy
         time_t tm_now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         auto lt_now = std::localtime(&tm_now);
         // save the bag path on string         
-        bag_exp_name =  bag_folder_ + BAG_NAME + std::string("_") + std::to_string(lt_now->tm_year+1900) + "_" + std::to_string(lt_now->tm_mon+1) + "_" + std::to_string(lt_now->tm_mday) + "_" +
-            std::to_string(lt_now->tm_hour) + ":" + std::to_string(lt_now->tm_min) + ":" +std::to_string(lt_now->tm_sec);
+        // bag_exp_name =  bag_folder_ + BAG_NAME + std::string("_") + std::to_string(lt_now->tm_year+1900) + "_" + std::to_string(lt_now->tm_mon+1) + "_" + std::to_string(lt_now->tm_mday) + "_" +
+            // std::to_string(lt_now->tm_hour) + ":" + std::to_string(lt_now->tm_min) + ":" +std::to_string(lt_now->tm_sec);
 
         // create the writer 
-        writer_ = std::make_unique<rosbag2_cpp::Writer>();
+        // writer_ = std::make_unique<rosbag2_cpp::Writer>();
         // try to open the new bag
-        try
+        // try
+        // {
+        //     writer_->open(bag_exp_name);
+        // }
+        // catch(const std::exception& e)
+        // {
+        //     std::cerr << e.what() << '\n';
+        //     assert(true);
+        // }
+        // // da vedere
+        // writer_ -> create_topic(
+        //     {BAG_TOPIC,
+        //     "pi3hat_moteus_int_msgs/msg/OmniMulinexCommand",
+        //     rmw_get_serialization_format(),
+        //     ""}
+        //     );
+
+        // set up leg command a the end of the standup 
+        foot_msg_.foot_id.resize(4);
+        foot_msg_.position.resize(4);
+        foot_msg_.velocity.resize(4);
+        foot_msg_.force.resize(4);
+        for( int i = 0; i < 4; i++)
         {
-            writer_->open(bag_exp_name);
+            foot_msg_.foot_id[i] = foot_name[i];
+            foot_msg_.position[i].x = ix_;
+            foot_msg_.position[i].z = iz_;
         }
-        catch(const std::exception& e)
-        {
-            std::cerr << e.what() << '\n';
-            assert(true);
-        }
-
-
-
-        
+        //create gait planner
+        sg_man_ = std::make_shared<Static_Gait_Manager>(&foot_msg_,sg_man_conf_,step_list);
         // set the QOS for the Wireless communication for both the command data, containing the joystic input, and the 
         // state data, provided by the interface 
         cmd_qos.reliability(rclcpp::ReliabilityPolicy::BestEffort);
         cmd_qos.deadline(dur_qos);
     
-        // stt_qos.reliability(rclcpp::ReliabilityPolicy::BestEffort);
-        // stt_qos.deadline(stt_dur);
-        input_qos.deadline(dur);
+        // // stt_qos.reliability(rclcpp::ReliabilityPolicy::BestEffort);
+        // // stt_qos.deadline(stt_dur);
+        // input_qos.deadline(dur);
 
 
         opt_cmd.event_callbacks.deadline_callback = 
@@ -121,17 +147,21 @@ namespace omni_mulinex_joy
         
 
         cmd_pub_ = this->create_publisher<OM_JoyCmd>(OM_CONTROLLER+std::string("command"),cmd_qos,opt_cmd);
+        leg_cmd_pub_ = this->create_publisher<FootCommand>(LEG_CONTROLLER+std::string("command"),cmd_qos);
 
         timer_ = this->create_wall_timer(dur,std::bind(&OmniMulinex_Joystic::main_callback,this),node_cb_grp);
-
+        dur = std::chrono::milliseconds(2000);
+        active_timer_ = this->create_wall_timer(dur,std::bind(&OmniMulinex_Joystic::check_callback,this),node_cb_grp);
         hom_srv_ = this->create_client<TransictionService>(OM_CONTROLLER+std::string("homing_srv"),srvs_qos.get_rmw_qos_profile(),node_cb_grp);
         emrgy_srv_ = this->create_client<TransictionService>(OM_CONTROLLER+std::string("emergency_srv"),srvs_qos.get_rmw_qos_profile(),node_cb_grp);
-
-
+        l_hom_srv_ = this->create_client<TransictionService>(LEG_CONTROLLER+std::string("homing_srv"),srvs_qos.get_rmw_qos_profile(),node_cb_grp);
+        l_emrgy_srv_ = this->create_client<TransictionService>(LEG_CONTROLLER+std::string("emergency_srv"),srvs_qos.get_rmw_qos_profile(),node_cb_grp);
+        l_active_srv_ = this->create_client<TransictionService>(LEG_CONTROLLER+std::string("is_active_srv"),srvs_qos.get_rmw_qos_profile(),node_cb_grp);
 
     }
     void OmniMulinex_Joystic::joy_command(const std::shared_ptr<JoyCommand> msg)
     {
+        std::lock_guard<std::mutex> lock(gv_mut_);
         double n2_v;
 
         // axis 1 is vx, axis 0 is vy, axis 3 is omega and axis 4 is height rate
@@ -156,27 +186,32 @@ namespace omni_mulinex_joy
         omega_ = (omega_ < deadzone_ && omega_  > - deadzone_ ) ? 0.0:sup_omega_*omega_;
         h_rate_ = msg->axes[HEIGHT_VEL_AX];
         h_rate_ = (h_rate_ < deadzone_ && h_rate_  > - deadzone_ ) ? 0.0:sup_height_rate_*h_rate_;
-
+        for(int i = 0; i < 4; i++)
+        {
+            foot_msg_.position[i].z -= h_rate_ *double(timer_dur_/1000.0);
+        }
         // RCLCPP_INFO(this->get_logger(),"h_rate %f",h_rate_);
         // RCLCPP_INFO(this->get_logger(),"%d",(!old_hom_but_ && msg->buttons[HOMING_BUTTON]==1.0));
         // RCLCPP_INFO(this->get_logger(),"PASS");
         if(!old_hom_but_ && msg->buttons[HOMING_BUTTON]==1.0)
         {
-
-            RCLCPP_INFO(this->get_logger(),"%d",hom_srv_->service_is_ready());
-            if(hom_srv_->service_is_ready())
+            if(plan_state_ == JoyState::Homing)
             {
-                srv_req_->data = true;
-                old_hom_but_ = true;
-                using ServiceResponseFuture = rclcpp::Client<TransictionService>::SharedFuture;
-                auto response_received_callback = [this](ServiceResponseFuture future) {
-                auto result = future.get();
-                RCLCPP_INFO(this->get_logger(), "Result is: %s with message %s", result->success?std::string("True").c_str():std::string("False").c_str(),
-                result->message.c_str());
-                
-                };
-                auto res_f = hom_srv_->async_send_request(srv_req_,response_received_callback);
-                
+                RCLCPP_INFO(this->get_logger(),"%d",l_hom_srv_->service_is_ready());
+                if(l_hom_srv_->service_is_ready())
+                {
+                    srv_req_->data = true;
+                    old_hom_but_ = true;
+                    using ServiceResponseFuture = rclcpp::Client<TransictionService>::SharedFuture;
+                    auto response_received_callback = [this](ServiceResponseFuture future) {
+                    auto result = future.get();
+                    RCLCPP_INFO(this->get_logger(), "Result is: %s with message %s", result->success?std::string("True").c_str():std::string("False").c_str(),
+                    result->message.c_str());
+                    
+                    };
+                    auto res_f = l_hom_srv_->async_send_request(srv_req_,response_received_callback);
+                    
+                }
             }
         }
         else
@@ -197,10 +232,48 @@ namespace omni_mulinex_joy
                 };
                 auto res = emrgy_srv_->async_send_request(srv_req_,response_received_callback);
             }
+            
+            if(l_emrgy_srv_->service_is_ready())
+            {
+                srv_req_->data = true;
+                old_emg_but_ = true;
+                using ServiceResponseFuture = rclcpp::Client<TransictionService>::SharedFuture;
+                auto response_received_callback = [this](ServiceResponseFuture future) {
+                auto result = future.get();
+                RCLCPP_INFO(this->get_logger(), "Result is: %s with message %s", result->success?std::string("True").c_str():std::string("False").c_str(),
+                result->message.c_str());
+                
+                };
+                auto res = l_emrgy_srv_->async_send_request(srv_req_,response_received_callback);
+            }
         }
         else    
             old_emg_but_ = false;
-        
+        // switching between static and rolling 
+        if(!old_change_but_ && msg->buttons[CHANGE_BUTTON] == 1.0)
+        {
+            if(this->plan_state_ == JoyState::Rolling )
+                this->plan_state_ = JoyState::Static;
+            else if(this->plan_state_ == JoyState::Static )
+                plan_state_ = JoyState::Rolling; 
+            old_change_but_ = true;
+        }
+        else    
+            old_change_but_ = false;
+        if(!old_walk_but_ && msg->buttons[WALK_BUTTON] == 1.0)
+        {
+            if(plan_state_ == JoyState::Static)
+            {
+                plan_state_ = JoyState::Walking;
+                //set init walk gait 
+                auto time_stamp = this->now();
+                sg_man_->set_walk_begin(time_stamp.seconds());
+                RCLCPP_INFO(this->get_logger(),"Start Walking");  
+                old_walk_but_ = true;
+            }
+        }
+        else    
+            old_walk_but_ = false;
     }
 
     void OmniMulinex_Joystic::stt_callback(std::shared_ptr<OM_State> msg)
@@ -233,19 +306,96 @@ namespace omni_mulinex_joy
         
 
     // }
+    void OmniMulinex_Joystic::check_callback()
+    {
+        std::lock_guard<std::mutex> lock(gv_mut_);
+        if(plan_state_ == JoyState::Homing)
+        {   
+            if(l_active_srv_->service_is_ready())
+            {
 
+                srv_req_->data = true;
+                using ServiceResponseFuture = rclcpp::Client<TransictionService>::SharedFuture;
+                auto response_received_callback = [this](ServiceResponseFuture future) {
+                auto result = future.get();
+                if(result->success)
+                {
+                    
+                    {
+                        std::lock_guard<std::mutex> lock(this->gv_mut_);
+                        this->plan_state_ = JoyState::Rolling;
+                        RCLCPP_INFO(this->get_logger(), "CHANGE STATE TO ROLLING");
+                        if(hom_srv_->service_is_ready())
+                        {
+                            srv_req_->data = true;
+                            using ServiceResponseFuture = rclcpp::Client<TransictionService>::SharedFuture;
+                            auto response_received_callback_1 = [this](ServiceResponseFuture future) {
+                            auto result = future.get();
+                            RCLCPP_INFO(this->get_logger(), "Result is: %s with message %s", result->success?std::string("True").c_str():std::string("False").c_str(),
+                            result->message.c_str());
+                            
+                            };
+                            auto res_f = hom_srv_->async_send_request(srv_req_,response_received_callback_1);
+                            
+                        }
+                    }
+                }
+                };
+                l_active_srv_->async_send_request(srv_req_,response_received_callback);
+            
+            }
+        } 
+        // else if(plan_state_ == JoyState::Rolling)
+        // {
+                
+        //     if(hom_srv_->service_is_ready())
+        //     {
+        //         srv_req_->data = true;
+        //         old_hom_but_ = true;
+        //         using ServiceResponseFuture = rclcpp::Client<TransictionService>::SharedFuture;
+        //         auto response_received_callback = [this](ServiceResponseFuture future) {
+        //         auto result = future.get();
+        //         RCLCPP_INFO(this->get_logger(), "Result is: %s with message %s", result->success?std::string("True").c_str():std::string("False").c_str(),
+        //         result->message.c_str());
+                
+        //         };
+        //         auto res_f = hom_srv_->async_send_request(srv_req_,response_received_callback);
+                
+        //     }
+        
+        // }
+    }
     void OmniMulinex_Joystic::main_callback()
     {
-        // set the message 
+        std::lock_guard<std::mutex> lock(gv_mut_);
         auto time_stamp = this->now();
-        cmd_msg_.set__v_x(v_x_);
-        cmd_msg_.set__v_y(v_y_);
-        cmd_msg_.set__omega(omega_);
-        cmd_msg_.set__height_rate(h_rate_);
-       
         cmd_msg_.header.set__stamp(time_stamp);
-       
+        // set the message 
+        cmd_msg_.set__v_x(0.0);
+        cmd_msg_.set__v_y(0.0);
+        cmd_msg_.set__omega(0.0);
+        cmd_msg_.set__height_rate(0.0);
+        if(plan_state_ == JoyState::Rolling)
+        {
+            cmd_msg_.set__v_x(v_x_);
+            cmd_msg_.set__v_y(v_y_);
+            cmd_msg_.set__omega(omega_);
+            cmd_msg_.set__height_rate(h_rate_);
+        }
+        else if (plan_state_ == JoyState::Walking)
+        {
+            // RCLCPP_INFO(this->get_logger(),"start update Walking");
+            sg_man_->update(time_stamp.seconds());
+            // RCLCPP_INFO(this->get_logger(),"end update Walking");
+            if(sg_man_->complete_step())
+            {
+                plan_state_=JoyState::Static;
+                RCLCPP_INFO(this->get_logger(), "Finish the walking step phase");
+            }
+        }
+        RCLCPP_INFO(this->get_logger(), "the state is %d", plan_state_);
         cmd_pub_->publish(cmd_msg_);
-        writer_ -> write(cmd_msg_,BAG_TOPIC,time_stamp);
+        leg_cmd_pub_->publish(foot_msg_);
+        // writer_ -> write(cmd_msg_,BAG_TOPIC,time_stamp);
     }
 }
