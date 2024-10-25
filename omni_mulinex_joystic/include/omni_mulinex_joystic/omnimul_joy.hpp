@@ -8,7 +8,7 @@
 #include "rclcpp/node.hpp"
 #include "rclcpp/callback_group.hpp"
 #include "rclcpp/qos.hpp"
-#include "rclcpp/event_handler.hpp"
+#include "rclcpp/qos_event.hpp"
 #include <string>
 #include <mutex>
 #include "rosbag2_cpp/writer.hpp"
