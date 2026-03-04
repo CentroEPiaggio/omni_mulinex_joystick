@@ -1,23 +1,14 @@
-import imp
 import os
-import yaml
-
-from launch import LaunchDescription,LaunchContext
-from launch.events.process import ProcessStarted
-from launch.actions import DeclareLaunchArgument,RegisterEventHandler,ExecuteProcess,LogInfo,EmitEvent
-from launch.substitutions import Command,LaunchConfiguration
-from launch.event_handlers import OnProcessStart,OnProcessIO,OnProcessExit,OnShutdown,OnExecutionComplete
+import subprocess
 
 from ament_index_python.packages import get_package_share_path
+from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
-import xml.etree.ElementTree as ET
-import subprocess
-import time
+
 
 
 def generate_launch_description():
-    joy_node_path = get_package_share_path("omni_mulinex_joystic")
+    joy_node_path = get_package_share_path("omni_mulinex_joystick")
 
     joy_cfg_file = os.path.join(joy_node_path,"config","joy_node.yaml")
 
@@ -36,11 +27,12 @@ def generate_launch_description():
     ) 
 
     joy_node = Node(
-        package="omni_mulinex_joystic",
+        package="omni_mulinex_joystick",
         executable="omni_mul_joystic_node",
         output="screen",
         parameters=[joy_cfg_file]
     )
+    
     return LaunchDescription([
         joy_event_node,
         joy_node

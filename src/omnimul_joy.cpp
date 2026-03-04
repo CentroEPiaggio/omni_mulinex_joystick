@@ -1,4 +1,4 @@
-#include "omni_mulinex_joystic/omnimul_joy.hpp"
+#include "omni_mulinex_joystick/omnimul_joy.hpp"
 #include "rclcpp/qos.hpp"
 #include <cassert>
 #include <cmath>
