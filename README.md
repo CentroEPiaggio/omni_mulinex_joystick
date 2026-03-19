@@ -15,3 +15,11 @@ If the command does not run try to execute `sudo su` after the colcon command.
 REMEMBER TO LOOK AT THE PATH WHERE THE BAGS ARE SAVED AND WHERE THE CSV FILES ARE STORED.
 
 The Matlab file for the velocity profile generation is inside the csv files folder.
+
+NB This works with the latest version of the Jacopino interface (new_mulsbc_ws)
+
+
+ 
+ 
+
+
