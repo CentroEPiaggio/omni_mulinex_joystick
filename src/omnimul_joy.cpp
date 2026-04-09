@@ -249,7 +249,12 @@ namespace omni_mulinex_joy
         cmd_msg_.set__v_y(v_y_);
         cmd_msg_.set__omega(omega_);
         cmd_msg_.set__height_rate(h_rate_);
-       
+         // --- FORZA I KP/KD ---
+        cmd_msg_.set__kp_scale_leg(1.0);
+        cmd_msg_.set__kd_scale_leg(1.0);
+        cmd_msg_.set__kp_scale_wheel(1.0);
+        cmd_msg_.set__kd_scale_wheel(1.0);
+        // ----------------------
         cmd_msg_.header.set__stamp(time_stamp);
        
         cmd_pub_->publish(cmd_msg_);
